@@ -1,0 +1,15 @@
+schema: 1
+story: '1.1'
+gate: PASS
+status_reason: >
+  All 6 acceptance criteria met. 4 dedicated percentage-sizing tests pass
+  (50%=100px, 100%=full, nested, mixed siblings); 68/68 total tests pass.
+  Feature demonstrated live in examples/feature-showcase.
+reviewer: Quinn
+updated: '2026-02-22T00:00:00Z'
+top_issues:
+  - id: 'DOC-001'
+    severity: low
+    finding: 'Story status field still shows InProgress; all tasks are complete'
+    suggested_action: 'Update story Status to Ready for Review to reflect actual state'
+waiver: { active: false }
