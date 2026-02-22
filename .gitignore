@@ -29,3 +29,4 @@ Thumbs.db
 .aios/install-log.txt
 .zig-cache/
 zig-out/bin/
+examples/feature-showcase/zig-out/

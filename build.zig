@@ -1,5 +1,23 @@
 const std = @import("std");
 
+fn detectLatestVulkanSDK(allocator: std.mem.Allocator) []const u8 {
+    // Try common Vulkan SDK paths in order
+    const commonPaths = [_][]const u8{
+        "C:\\VulkanSDK\\1.4.341.1",
+        "C:\\VulkanSDK\\1.4.335.0",
+        "C:\\VulkanSDK\\1.4.280.1",
+        "C:/VulkanSDK/1.4.335.0",
+    };
+
+    for (commonPaths) |path| {
+        if (std.fs.accessAbsolute(path, .{})) |_| {
+            return allocator.dupe(u8, path) catch "C:/VulkanSDK/1.4.335.0";
+        } else |_| {}
+    }
+
+    return "C:/VulkanSDK/1.4.335.0";
+}
+
 const Dependencies = struct {
     freetype: *std.Build.Dependency,
     kb_text_shape: *std.Build.Dependency,
@@ -32,7 +50,8 @@ const Dependencies = struct {
             .optimize = optimize,
         });
 
-        const vulkanSdkPath = std.process.getEnvVarOwned(b.allocator, "VULKAN_SDK") catch b.fmt("{s}", .{"C:/VulkanSDK/1.4.335.0"});
+        // Get Vulkan SDK path from env var or detect latest version
+        const vulkanSdkPath = std.process.getEnvVarOwned(b.allocator, "VULKAN_SDK") catch detectLatestVulkanSDK(b.allocator);
 
         return @This(){
             .freetype = freetype,
@@ -247,5 +266,13 @@ pub fn build(b: *std.Build) void {
         });
         uhoh_build.setCwd(b.path("examples/uhoh.com"));
         check_step.dependOn(&uhoh_build.step);
+
+        // Build feature-showcase example
+        const showcase_build = b.addSystemCommand(&.{
+            "zig",
+            "build",
+        });
+        showcase_build.setCwd(b.path("examples/feature-showcase"));
+        check_step.dependOn(&showcase_build.step);
     }
 }
