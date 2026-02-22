@@ -134,8 +134,11 @@ pub fn addShaderImport(b: *std.Build, module: *std.Build.Module, path: []const u
 }
 
 pub fn build(b: *std.Build) void {
-    const target = b.standardTargetOptions(.{});
+    var target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+
+    // Force generic CPU model for compatibility (baseline works on all x86-64 CPUs)
+    target.query.cpu_model = .baseline;
 
     const forbear = b.addModule("forbear", .{
         .root_source_file = b.path("src/root.zig"),
