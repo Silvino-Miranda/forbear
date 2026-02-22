@@ -105,6 +105,11 @@ pub const TextWrapping = enum {
     none,
 };
 
+pub const TextDecoration = enum {
+    none,
+    underline,
+};
+
 pub const Padding = struct {
     x: Vec2,
     y: Vec2,
@@ -323,6 +328,7 @@ pub const Style = struct {
     fontSize: f32,
     lineHeight: f32,
     textWrapping: TextWrapping,
+    textDecoration: TextDecoration,
 
     placement: Placement,
     zIndex: ?u16 = null,
@@ -402,6 +408,7 @@ pub const IncompleteStyle = struct {
     fontSize: ?f32 = null,
     lineHeight: ?f32 = null,
     textWrapping: ?TextWrapping = null,
+    textDecoration: ?TextDecoration = null,
 
     placement: Placement = .standard,
     zIndex: ?u16 = null,
@@ -439,6 +446,7 @@ pub const IncompleteStyle = struct {
             .fontSize = self.fontSize orelse base.fontSize,
             .lineHeight = self.lineHeight orelse base.lineHeight,
             .textWrapping = self.textWrapping orelse base.textWrapping,
+            .textDecoration = self.textDecoration orelse .none,
 
             .placement = self.placement,
             .zIndex = self.zIndex,
@@ -481,3 +489,13 @@ pub const Element = struct {
     style: IncompleteStyle,
     children: std.ArrayList(Node) = .empty,
 };
+
+test "Text decoration - IncompleteStyle textDecoration defaults to null" {
+    const style = IncompleteStyle{};
+    try std.testing.expect(style.textDecoration == null);
+}
+
+test "Text decoration - IncompleteStyle with underline stores value correctly" {
+    const style = IncompleteStyle{ .textDecoration = .underline };
+    try std.testing.expect(style.textDecoration.? == .underline);
+}

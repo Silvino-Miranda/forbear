@@ -3649,15 +3649,20 @@ pub const Renderer = struct {
         // glyphs and then allocate enough memory on the shader buffers ---
         var totalShadowCount: usize = 0;
         var totalGlyphCount: usize = 0;
-        const totalElementCount: usize = orderedLayoutBoxes.len;
+        var totalUnderlineCount: usize = 0;
+        var totalElementCount: usize = orderedLayoutBoxes.len;
         for (orderedLayoutBoxes) |layoutBox| {
             if (layoutBox.style.shadow != null) {
                 totalShadowCount += 1;
             }
             if (layoutBox.children != null and layoutBox.children.? == .glyphs) {
                 totalGlyphCount += layoutBox.children.?.glyphs.slice.len;
+                if (layoutBox.style.textDecoration == .underline) {
+                    totalUnderlineCount += 1;
+                }
             }
         }
+        totalElementCount += totalUnderlineCount;
 
         if (totalShadowCount > self.shadowsPipeline.shadowShaderData[frameIndex].len) {
             try self.shadowsPipeline.resizeConcurrentShadowCapacity(
@@ -3691,10 +3696,12 @@ pub const Renderer = struct {
         var shadowIntervals = try arena.alloc(?LayerInterval, @intCast(maxZ));
         var blendAddElementIntervals = try arena.alloc(?LayerInterval, @intCast(maxZ));
         var blendMultiplyElementIntervals = try arena.alloc(?LayerInterval, @intCast(maxZ));
+        var underlineElementIntervals = try arena.alloc(?LayerInterval, @intCast(maxZ));
         var textIntervals = try arena.alloc(?LayerInterval, @intCast(maxZ));
         for (shadowIntervals) |*interval| interval.* = null;
         for (blendAddElementIntervals) |*interval| interval.* = null;
         for (blendMultiplyElementIntervals) |*interval| interval.* = null;
+        for (underlineElementIntervals) |*interval| interval.* = null;
         for (textIntervals) |*interval| interval.* = null;
 
         const atlasWidthInv: f32 = 1.0 / @as(f32, @floatFromInt(self.textPipeline.fontTextureAtlas.capacityExtent.width));
@@ -3714,6 +3721,7 @@ pub const Renderer = struct {
         }
         var blendAddElementIndex: usize = 0;
         var blendMultiplyElementIndex: usize = totalBlendAddElementCount;
+        var underlineElementIndex: usize = orderedLayoutBoxes.len;
 
         for (orderedLayoutBoxes) |layoutBox| {
             const elementIndex = switch (layoutBox.style.blendMode) {
@@ -3918,10 +3926,45 @@ pub const Renderer = struct {
                     };
                     glyphIndex += 1;
                 }
+
+                if (layoutBox.style.textDecoration == .underline) {
+                    const idx = underlineElementIndex;
+                    underlineElementIndex += 1;
+                    if (underlineElementIntervals[layoutBox.z - 1]) |*interval| {
+                        std.debug.assert(interval.end + 1 == idx);
+                        interval.end = idx;
+                    } else {
+                        underlineElementIntervals[layoutBox.z - 1] = LayerInterval{
+                            .start = idx,
+                            .end = idx,
+                        };
+                    }
+                    const unitsPerEmF: f32 = @floatFromInt(layoutBox.style.font.unitsPerEm());
+                    const pixelAscent = (layoutBox.style.font.ascent() / unitsPerEmF) * layoutBox.style.fontSize * resolutionMultiplier[0];
+                    const underlineThickness = @max(1.0, layoutBox.style.fontSize / 14.0 * resolutionMultiplier[0]);
+                    const underlineY = layoutBox.position[1] + pixelAscent + 1.0;
+                    self.elementsPipeline.elementsShaderData[frameIndex][idx] = ElementRenderingData{
+                        .modelViewProjectionMatrix = zmath.mul(
+                            zmath.mul(
+                                zmath.scaling(layoutBox.size[0], underlineThickness, 1.0),
+                                zmath.translation(layoutBox.position[0], underlineY, 0.0),
+                            ),
+                            projectionMatrix,
+                        ),
+                        .backgroundColor = srgbToLinearColor(layoutBox.style.color),
+                        .size = .{ layoutBox.size[0], underlineThickness },
+                        .borderRadius = 0.0,
+                        .borderColor = Vec4{ 0.0, 0.0, 0.0, 0.0 },
+                        .borderSize = .{ 0.0, 0.0, 0.0, 0.0 },
+                        .imageIndex = -1,
+                        .blendMode = 0,
+                    };
+                }
             }
         }
         std.debug.assert(blendAddElementIndex == totalBlendAddElementCount);
-        std.debug.assert(blendMultiplyElementIndex == totalElementCount);
+        std.debug.assert(blendMultiplyElementIndex == orderedLayoutBoxes.len);
+        std.debug.assert(underlineElementIndex == totalElementCount);
 
         if (std.time.microTimestamp() - start > 1000) {
             std.log.warn("prepared {d} shadows, {d} elements, {d} glyphs to render taking {d}μs", .{ totalShadowCount, totalElementCount, totalGlyphCount, std.time.microTimestamp() - start });
@@ -3996,6 +4039,15 @@ pub const Renderer = struct {
                 self.elementsPipeline.draw(
                     elementInterval,
                     .multiply,
+                    frameIndex,
+                    self.commandBuffers[frameIndex],
+                    &self.rectangleModel,
+                );
+            }
+            if (underlineElementIntervals[i]) |underlineInterval| {
+                self.elementsPipeline.draw(
+                    underlineInterval,
+                    .normal,
                     frameIndex,
                     self.commandBuffers[frameIndex],
                     &self.rectangleModel,
