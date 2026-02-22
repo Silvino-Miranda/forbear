@@ -5,7 +5,7 @@
     - [ ] uhoh.com
     - [ ] https://wayland-book.com
 - [ ] implement scrolling 
-- [ ] I need a way to define the percentage width that an element would take 
+- [x] I need a way to define the percentage width that an element would take 
   of its parent
 - [ ] a way to define children for components
     - most likely using a "slotting" solution where

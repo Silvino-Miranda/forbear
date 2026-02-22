@@ -23,6 +23,8 @@ pub const Direction = enum {
 pub const Sizing = union(enum) {
     fit,
     fixed: f32,
+    /// Percentage of the parent inner size, where `100` means full size.
+    percentage: f32,
     grow,
 };
 

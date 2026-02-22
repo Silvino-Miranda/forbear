@@ -398,7 +398,7 @@ pub const VkWin32SurfaceCreateInfoKHR = extern struct {
     hwnd: HWND,
 };
 
-pub extern "vulkan" fn vkCreateWin32SurfaceKHR(
+pub extern "vulkan-1" fn vkCreateWin32SurfaceKHR(
     instance: c.VkInstance,
     pCreateInfo: ?*const VkWin32SurfaceCreateInfoKHR,
     pAllocator: ?*c.VkAllocationCallbacks,

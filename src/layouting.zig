@@ -431,6 +431,35 @@ fn fitWidth(layoutBox: *LayoutBox) void {
     }
 }
 
+fn resolvePercentageSizing(layoutBox: *LayoutBox, parentInnerSize: ?Vec2, viewportSize: Vec2) void {
+    const referenceSize = parentInnerSize orelse viewportSize;
+    if (layoutBox.style.width == .percentage) {
+        const percentage = @max(layoutBox.style.width.percentage, 0.0) / 100.0;
+        layoutBox.size[0] = referenceSize[0] * percentage;
+    }
+    if (layoutBox.style.height == .percentage) {
+        const percentage = @max(layoutBox.style.height.percentage, 0.0) / 100.0;
+        layoutBox.size[1] = referenceSize[1] * percentage;
+    }
+
+    layoutBox.size = @max(layoutBox.minSize, @min(layoutBox.size, layoutBox.maxSize));
+
+    if (layoutBox.children) |children| {
+        switch (children) {
+            .layoutBoxes => |childBoxes| {
+                const innerSize = @max(Vec2{ 0.0, 0.0 }, Vec2{
+                    layoutBox.size[0] - (layoutBox.style.padding.x[0] + layoutBox.style.padding.x[1]) - (layoutBox.style.borderWidth.x[0] + layoutBox.style.borderWidth.x[1]),
+                    layoutBox.size[1] - (layoutBox.style.padding.y[0] + layoutBox.style.padding.y[1]) - (layoutBox.style.borderWidth.y[0] + layoutBox.style.borderWidth.y[1]),
+                });
+                for (childBoxes) |*child| {
+                    resolvePercentageSizing(child, innerSize, viewportSize);
+                }
+            },
+            .glyphs => {},
+        }
+    }
+}
+
 fn place(layoutBox: *LayoutBox) void {
     layoutBox.position += layoutBox.style.translate;
     if (layoutBox.children != null) {
@@ -562,11 +591,11 @@ const LayoutCreator = struct {
                     .size = .{
                         switch (style.width) {
                             .fixed => |width| width,
-                            .fit, .grow => 0.0,
+                            .fit, .percentage, .grow => 0.0,
                         },
                         switch (style.height) {
                             .fixed => |height| height,
-                            .fit, .grow => 0.0,
+                            .fit, .percentage, .grow => 0.0,
                         },
                     },
                     .minSize = .{
@@ -735,6 +764,7 @@ pub fn layout(
             if (layoutBox.style.height == .grow) {
                 layoutBox.size[1] = viewportSize[1];
             }
+            resolvePercentageSizing(&layoutBox, null, viewportSize);
             try growAndShrink(arena, &layoutBox);
             try wrap(arena, &layoutBox);
             fitWidth(&layoutBox);
@@ -886,6 +916,281 @@ test "growAndShrink - single grow child fills remaining space horizontally" {
             .{ 100.0, 50.0 },
         },
     });
+}
+
+test "resolvePercentageSizing - child width uses parent inner width" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arenaAllocator = arena.allocator();
+
+    const childBoxes = try arenaAllocator.alloc(LayoutBox, 1);
+    childBoxes[0] = LayoutBox{
+        .key = 2,
+        .position = .{ 0.0, 0.0 },
+        .z = 0,
+        .size = .{ 0.0, 100.0 },
+        .minSize = .{ 0.0, 100.0 },
+        .maxSize = .{ std.math.inf(f32), std.math.inf(f32) },
+        .children = null,
+        .style = (IncompleteStyle{
+            .width = .{ .percentage = 50.0 },
+            .height = .{ .fixed = 100.0 },
+        }).completeWith(defaultBaseStyle),
+    };
+
+    var parent = LayoutBox{
+        .key = 1,
+        .position = .{ 0.0, 0.0 },
+        .z = 0,
+        .size = .{ 300.0, 100.0 },
+        .minSize = .{ 300.0, 100.0 },
+        .maxSize = .{ 300.0, 100.0 },
+        .children = .{ .layoutBoxes = childBoxes },
+        .style = (IncompleteStyle{
+            .width = .{ .fixed = 300.0 },
+            .height = .{ .fixed = 100.0 },
+            .padding = .inLine(20.0),
+        }).completeWith(defaultBaseStyle),
+    };
+
+    resolvePercentageSizing(&parent, null, .{ 1920.0, 1080.0 });
+
+    try std.testing.expectEqual(130.0, parent.children.?.layoutBoxes[0].size[0]);
+}
+
+test "resolvePercentageSizing - root percentage uses viewport" {
+    var root = LayoutBox{
+        .key = 1,
+        .position = .{ 0.0, 0.0 },
+        .z = 0,
+        .size = .{ 0.0, 0.0 },
+        .minSize = .{ 0.0, 0.0 },
+        .maxSize = .{ std.math.inf(f32), std.math.inf(f32) },
+        .children = null,
+        .style = (IncompleteStyle{
+            .width = .{ .percentage = 50.0 },
+            .height = .{ .percentage = 25.0 },
+        }).completeWith(defaultBaseStyle),
+    };
+
+    resolvePercentageSizing(&root, null, .{ 1200.0, 800.0 });
+
+    try std.testing.expectEqual(600.0, root.size[0]);
+    try std.testing.expectEqual(200.0, root.size[1]);
+}
+
+test "Percentage sizing - 50 percent of 200px parent equals 100px" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arenaAllocator = arena.allocator();
+
+    const childBoxes = try arenaAllocator.alloc(LayoutBox, 1);
+    childBoxes[0] = LayoutBox{
+        .key = 2,
+        .position = .{ 0.0, 0.0 },
+        .z = 0,
+        .size = .{ 0.0, 0.0 },
+        .minSize = .{ 0.0, 0.0 },
+        .maxSize = .{ std.math.inf(f32), std.math.inf(f32) },
+        .children = null,
+        .style = (IncompleteStyle{
+            .width = .{ .percentage = 50.0 },
+        }).completeWith(defaultBaseStyle),
+    };
+
+    var parent = LayoutBox{
+        .key = 1,
+        .position = .{ 0.0, 0.0 },
+        .z = 0,
+        .size = .{ 200.0, 100.0 },
+        .minSize = .{ 200.0, 100.0 },
+        .maxSize = .{ 200.0, 100.0 },
+        .children = .{ .layoutBoxes = childBoxes },
+        .style = (IncompleteStyle{
+            .width = .{ .fixed = 200.0 },
+            .height = .{ .fixed = 100.0 },
+        }).completeWith(defaultBaseStyle),
+    };
+
+    resolvePercentageSizing(&parent, null, .{ 1920.0, 1080.0 });
+
+    try std.testing.expectEqual(100.0, parent.children.?.layoutBoxes[0].size[0]);
+}
+
+test "Percentage sizing - 100 percent equals full parent size" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arenaAllocator = arena.allocator();
+
+    const childBoxes = try arenaAllocator.alloc(LayoutBox, 1);
+    childBoxes[0] = LayoutBox{
+        .key = 2,
+        .position = .{ 0.0, 0.0 },
+        .z = 0,
+        .size = .{ 0.0, 0.0 },
+        .minSize = .{ 0.0, 0.0 },
+        .maxSize = .{ std.math.inf(f32), std.math.inf(f32) },
+        .children = null,
+        .style = (IncompleteStyle{
+            .width = .{ .percentage = 100.0 },
+            .height = .{ .percentage = 100.0 },
+        }).completeWith(defaultBaseStyle),
+    };
+
+    var parent = LayoutBox{
+        .key = 1,
+        .position = .{ 0.0, 0.0 },
+        .z = 0,
+        .size = .{ 300.0, 150.0 },
+        .minSize = .{ 300.0, 150.0 },
+        .maxSize = .{ 300.0, 150.0 },
+        .children = .{ .layoutBoxes = childBoxes },
+        .style = (IncompleteStyle{
+            .width = .{ .fixed = 300.0 },
+            .height = .{ .fixed = 150.0 },
+        }).completeWith(defaultBaseStyle),
+    };
+
+    resolvePercentageSizing(&parent, null, .{ 1920.0, 1080.0 });
+
+    try std.testing.expectEqual(300.0, parent.children.?.layoutBoxes[0].size[0]);
+    try std.testing.expectEqual(150.0, parent.children.?.layoutBoxes[0].size[1]);
+}
+
+test "Percentage sizing - nested percentages resolve correctly" {
+    // grandchild 50% of child (50% of 200px = 100px) → grandchild = 50px
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arenaAllocator = arena.allocator();
+
+    const grandchildBoxes = try arenaAllocator.alloc(LayoutBox, 1);
+    grandchildBoxes[0] = LayoutBox{
+        .key = 3,
+        .position = .{ 0.0, 0.0 },
+        .z = 0,
+        .size = .{ 0.0, 0.0 },
+        .minSize = .{ 0.0, 0.0 },
+        .maxSize = .{ std.math.inf(f32), std.math.inf(f32) },
+        .children = null,
+        .style = (IncompleteStyle{
+            .width = .{ .percentage = 50.0 },
+        }).completeWith(defaultBaseStyle),
+    };
+
+    const childBoxes = try arenaAllocator.alloc(LayoutBox, 1);
+    childBoxes[0] = LayoutBox{
+        .key = 2,
+        .position = .{ 0.0, 0.0 },
+        .z = 0,
+        .size = .{ 0.0, 100.0 },
+        .minSize = .{ 0.0, 0.0 },
+        .maxSize = .{ std.math.inf(f32), std.math.inf(f32) },
+        .children = .{ .layoutBoxes = grandchildBoxes },
+        .style = (IncompleteStyle{
+            .width = .{ .percentage = 50.0 },
+        }).completeWith(defaultBaseStyle),
+    };
+
+    var parent = LayoutBox{
+        .key = 1,
+        .position = .{ 0.0, 0.0 },
+        .z = 0,
+        .size = .{ 200.0, 100.0 },
+        .minSize = .{ 200.0, 100.0 },
+        .maxSize = .{ 200.0, 100.0 },
+        .children = .{ .layoutBoxes = childBoxes },
+        .style = (IncompleteStyle{
+            .width = .{ .fixed = 200.0 },
+            .height = .{ .fixed = 100.0 },
+        }).completeWith(defaultBaseStyle),
+    };
+
+    resolvePercentageSizing(&parent, null, .{ 1920.0, 1080.0 });
+
+    // child = 50% of 200px = 100px
+    try std.testing.expectEqual(100.0, parent.children.?.layoutBoxes[0].size[0]);
+    // grandchild = 50% of 100px (child inner) = 50px
+    try std.testing.expectEqual(50.0, parent.children.?.layoutBoxes[0].children.?.layoutBoxes[0].size[0]);
+}
+
+test "Percentage sizing - compatible with grow and fixed siblings in mixed container" {
+    // Container: 400px wide (leftToRight)
+    // Child A: 50% percentage → 200px
+    // Child C: fixed 100px
+    // Child B: grow → gets remaining 400 - 200 - 100 = 100px
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arenaAllocator = arena.allocator();
+
+    const childBoxes = try arenaAllocator.alloc(LayoutBox, 3);
+    // A: percentage 50%
+    childBoxes[0] = LayoutBox{
+        .key = 2,
+        .position = .{ 0.0, 0.0 },
+        .z = 0,
+        .size = .{ 0.0, 50.0 },
+        .minSize = .{ 0.0, 0.0 },
+        .maxSize = .{ std.math.inf(f32), std.math.inf(f32) },
+        .children = null,
+        .style = (IncompleteStyle{
+            .width = .{ .percentage = 50.0 },
+        }).completeWith(defaultBaseStyle),
+    };
+    // B: grow
+    childBoxes[1] = LayoutBox{
+        .key = 3,
+        .position = .{ 0.0, 0.0 },
+        .z = 0,
+        .size = .{ 0.0, 50.0 },
+        .minSize = .{ 0.0, 0.0 },
+        .maxSize = .{ std.math.inf(f32), std.math.inf(f32) },
+        .children = null,
+        .style = (IncompleteStyle{
+            .width = .grow,
+        }).completeWith(defaultBaseStyle),
+    };
+    // C: fixed 100px
+    childBoxes[2] = LayoutBox{
+        .key = 4,
+        .position = .{ 0.0, 0.0 },
+        .z = 0,
+        .size = .{ 100.0, 50.0 },
+        .minSize = .{ 100.0, 0.0 },
+        .maxSize = .{ 100.0, std.math.inf(f32) },
+        .children = null,
+        .style = (IncompleteStyle{
+            .width = .{ .fixed = 100.0 },
+        }).completeWith(defaultBaseStyle),
+    };
+
+    var parent = LayoutBox{
+        .key = 1,
+        .position = .{ 0.0, 0.0 },
+        .z = 0,
+        .size = .{ 400.0, 50.0 },
+        .minSize = .{ 400.0, 0.0 },
+        .maxSize = .{ 400.0, 50.0 },
+        .children = .{ .layoutBoxes = childBoxes },
+        .style = (IncompleteStyle{
+            .direction = .leftToRight,
+            .width = .{ .fixed = 400.0 },
+        }).completeWith(defaultBaseStyle),
+    };
+
+    resolvePercentageSizing(&parent, null, .{ 1920.0, 1080.0 });
+    try growAndShrink(arenaAllocator, &parent);
+
+    // A: 50% of 400px = 200px
+    try std.testing.expectEqual(200.0, parent.children.?.layoutBoxes[0].size[0]);
+    // B: grow gets 400 - 200 - 100 = 100px
+    try std.testing.expectEqual(100.0, parent.children.?.layoutBoxes[1].size[0]);
+    // C: fixed stays 100px
+    try std.testing.expectEqual(100.0, parent.children.?.layoutBoxes[2].size[0]);
 }
 
 test "growAndShrink - all grow children at maxSize with remaining space" {

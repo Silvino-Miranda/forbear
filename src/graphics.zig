@@ -1670,17 +1670,20 @@ const ElementsPipeline = struct {
 
     registeredImages: std.ArrayList(*const Image),
     sampler: c.VkSampler,
+    supportsImageSampling: bool,
 
     const maxImages = 1024;
 
     const elementVertexShader: []const u32 = @ptrCast(@alignCast(@embedFile("element_vertex_shader")));
     const elementFragmentShader: []const u32 = @ptrCast(@alignCast(@embedFile("element_fragment_shader")));
+    const elementFragmentCompatShader: []const u32 = @ptrCast(@alignCast(@embedFile("element_fragment_compat_shader")));
 
     fn init(
         allocator: std.mem.Allocator,
         logicalDevice: c.VkDevice,
         physicalDevice: c.VkPhysicalDevice,
         renderPass: c.VkRenderPass,
+        supportsImageSampling: bool,
     ) !@This() {
         var vertexShaderModule: c.VkShaderModule = undefined;
         try ensureNoError(c.vkCreateShaderModule(
@@ -1704,8 +1707,8 @@ const ElementsPipeline = struct {
                 .sType = c.VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
                 .pNext = null,
                 .flags = 0,
-                .codeSize = @sizeOf(u32) * elementFragmentShader.len,
-                .pCode = elementFragmentShader.ptr,
+                .codeSize = @sizeOf(u32) * (if (supportsImageSampling) elementFragmentShader.len else elementFragmentCompatShader.len),
+                .pCode = (if (supportsImageSampling) elementFragmentShader.ptr else elementFragmentCompatShader.ptr),
             },
             null,
             &fragmentShaderModule,
@@ -1738,7 +1741,7 @@ const ElementsPipeline = struct {
             c.VK_DYNAMIC_STATE_SCISSOR,
         };
 
-        const bindings = [_]c.VkDescriptorSetLayoutBinding{
+        const bindingsWithImages = [_]c.VkDescriptorSetLayoutBinding{
             .{
                 .binding = 0,
                 .descriptorType = c.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
@@ -1755,6 +1758,19 @@ const ElementsPipeline = struct {
             },
         };
 
+        const bindingsCompat = [_]c.VkDescriptorSetLayoutBinding{
+            .{
+                .binding = 0,
+                .descriptorType = c.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                .descriptorCount = 1,
+                .stageFlags = c.VK_SHADER_STAGE_VERTEX_BIT,
+                .pImmutableSamplers = null,
+            },
+        };
+
+        const bindingsPtr: [*]const c.VkDescriptorSetLayoutBinding = if (supportsImageSampling) &bindingsWithImages else &bindingsCompat;
+        const bindingsLen: u32 = if (supportsImageSampling) bindingsWithImages.len else bindingsCompat.len;
+
         const bindingFlags = [_]c.VkDescriptorBindingFlags{
             0,
             c.VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT |
@@ -1765,19 +1781,22 @@ const ElementsPipeline = struct {
         const bindingFlagsCreateInfo = c.VkDescriptorSetLayoutBindingFlagsCreateInfo{
             .sType = c.VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO,
             .pNext = null,
-            .bindingCount = bindings.len,
+            .bindingCount = bindingsLen,
             .pBindingFlags = &bindingFlags,
         };
+
+        const descriptorSetLayoutPNext = if (supportsImageSampling) &bindingFlagsCreateInfo else null;
+        const descriptorSetLayoutFlags: c.VkDescriptorSetLayoutCreateFlags = if (supportsImageSampling) c.VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT else 0;
 
         var shaderBufferDescriptorSetLayout: c.VkDescriptorSetLayout = undefined;
         try ensureNoError(c.vkCreateDescriptorSetLayout(
             logicalDevice,
             &c.VkDescriptorSetLayoutCreateInfo{
                 .sType = c.VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-                .pNext = &bindingFlagsCreateInfo,
-                .flags = c.VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT,
-                .bindingCount = bindings.len,
-                .pBindings = &bindings,
+                .pNext = descriptorSetLayoutPNext,
+                .flags = descriptorSetLayoutFlags,
+                .bindingCount = bindingsLen,
+                .pBindings = bindingsPtr,
             },
             null,
             &shaderBufferDescriptorSetLayout,
@@ -2017,7 +2036,7 @@ const ElementsPipeline = struct {
             shaderBuffersMapped[i] = @as([*]ElementRenderingData, @ptrCast(@alignCast(storageBufferData)))[0..initialElementCapacity];
         }
 
-        const poolSizes = [_]c.VkDescriptorPoolSize{
+        const poolSizesWithImages = [_]c.VkDescriptorPoolSize{
             .{
                 .type = c.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                 .descriptorCount = maxFramesInFlight,
@@ -2028,13 +2047,25 @@ const ElementsPipeline = struct {
             },
         };
 
+        const poolSizesCompat = [_]c.VkDescriptorPoolSize{
+            .{
+                .type = c.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                .descriptorCount = maxFramesInFlight,
+            },
+        };
+
+        const poolSizesPtr: [*]const c.VkDescriptorPoolSize = if (supportsImageSampling) &poolSizesWithImages else &poolSizesCompat;
+        const poolSizesLen: u32 = if (supportsImageSampling) poolSizesWithImages.len else poolSizesCompat.len;
+
+        const descriptorPoolFlags: c.VkDescriptorPoolCreateFlags = if (supportsImageSampling) c.VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT else 0;
+
         var descriptorPool: c.VkDescriptorPool = undefined;
         try ensureNoError(c.vkCreateDescriptorPool(logicalDevice, &c.VkDescriptorPoolCreateInfo{
             .sType = c.VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
-            .poolSizeCount = poolSizes.len,
+            .poolSizeCount = poolSizesLen,
             .maxSets = maxFramesInFlight,
-            .pPoolSizes = &poolSizes,
-            .flags = c.VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT,
+            .pPoolSizes = poolSizesPtr,
+            .flags = descriptorPoolFlags,
             .pNext = null,
         }, null, &descriptorPool));
 
@@ -2069,27 +2100,29 @@ const ElementsPipeline = struct {
             c.vkUpdateDescriptorSets(logicalDevice, 1, &descriptorWrite, 0, null);
         }
 
-        var sampler: c.VkSampler = undefined;
-        try ensureNoError(c.vkCreateSampler(logicalDevice, &c.VkSamplerCreateInfo{
-            .sType = c.VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
-            .magFilter = c.VK_FILTER_LINEAR,
-            .minFilter = c.VK_FILTER_LINEAR,
-            .addressModeU = c.VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
-            .addressModeV = c.VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
-            .addressModeW = c.VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
-            .anisotropyEnable = c.VK_FALSE,
-            .maxAnisotropy = 1.0,
-            .borderColor = c.VK_BORDER_COLOR_INT_OPAQUE_WHITE,
-            .unnormalizedCoordinates = c.VK_FALSE,
-            .compareEnable = c.VK_FALSE,
-            .compareOp = c.VK_COMPARE_OP_ALWAYS,
-            .mipmapMode = c.VK_SAMPLER_MIPMAP_MODE_LINEAR,
-            .mipLodBias = 0.0,
-            .minLod = 0.0,
-            .maxLod = 0.0,
-            .pNext = null,
-            .flags = 0,
-        }, null, &sampler));
+        var sampler: c.VkSampler = null;
+        if (supportsImageSampling) {
+            try ensureNoError(c.vkCreateSampler(logicalDevice, &c.VkSamplerCreateInfo{
+                .sType = c.VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+                .magFilter = c.VK_FILTER_LINEAR,
+                .minFilter = c.VK_FILTER_LINEAR,
+                .addressModeU = c.VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+                .addressModeV = c.VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+                .addressModeW = c.VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+                .anisotropyEnable = c.VK_FALSE,
+                .maxAnisotropy = 1.0,
+                .borderColor = c.VK_BORDER_COLOR_INT_OPAQUE_WHITE,
+                .unnormalizedCoordinates = c.VK_FALSE,
+                .compareEnable = c.VK_FALSE,
+                .compareOp = c.VK_COMPARE_OP_ALWAYS,
+                .mipmapMode = c.VK_SAMPLER_MIPMAP_MODE_LINEAR,
+                .mipLodBias = 0.0,
+                .minLod = 0.0,
+                .maxLod = 0.0,
+                .pNext = null,
+                .flags = 0,
+            }, null, &sampler));
+        }
 
         return ElementsPipeline{
             .allocator = allocator,
@@ -2104,11 +2137,15 @@ const ElementsPipeline = struct {
             .descriptorSets = descriptorSets,
             .descriptorPool = descriptorPool,
             .sampler = sampler,
+            .supportsImageSampling = supportsImageSampling,
             .registeredImages = try std.ArrayList(*const Image).initCapacity(allocator, 16),
         };
     }
 
     fn registerImage(self: *@This(), image: *Image, logicalDevice: c.VkDevice) !u32 {
+        if (!self.supportsImageSampling) {
+            return 0;
+        }
         for (self.registeredImages.items, 0..) |registered, i| {
             if (registered == image) return @intCast(i);
         }
@@ -2243,7 +2280,9 @@ const ElementsPipeline = struct {
     fn deinit(self: *@This(), logicalDevice: c.VkDevice) void {
         self.registeredImages.deinit(self.allocator);
 
-        c.vkDestroySampler(logicalDevice, self.sampler, null);
+        if (self.sampler != null) {
+            c.vkDestroySampler(logicalDevice, self.sampler, null);
+        }
         c.vkDestroyDescriptorPool(logicalDevice, self.descriptorPool, null);
 
         for (self.elementsShaderDataBuffer) |buffer| {
@@ -2320,6 +2359,7 @@ const TextPipeline = struct {
 
     const textVertexShader: []const u32 = @ptrCast(@alignCast(@embedFile("text_vertex_shader")));
     const textFragmentShader: []const u32 = @ptrCast(@alignCast(@embedFile("text_fragment_shader")));
+    const textFragmentCompatShader: []const u32 = @ptrCast(@alignCast(@embedFile("text_fragment_compat_shader")));
 
     fn init(
         allocator: std.mem.Allocator,
@@ -2328,6 +2368,7 @@ const TextPipeline = struct {
         graphicsQueue: c.VkQueue,
         commandPool: c.VkCommandPool,
         renderPass: c.VkRenderPass,
+        supportsDualSrcBlend: bool,
     ) !@This() {
         var vertexShaderModule: c.VkShaderModule = undefined;
         try ensureNoError(c.vkCreateShaderModule(
@@ -2351,8 +2392,8 @@ const TextPipeline = struct {
                 .sType = c.VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
                 .pNext = null,
                 .flags = 0,
-                .codeSize = @sizeOf(u32) * textFragmentShader.len,
-                .pCode = textFragmentShader.ptr,
+                .codeSize = @sizeOf(u32) * (if (supportsDualSrcBlend) textFragmentShader.len else textFragmentCompatShader.len),
+                .pCode = (if (supportsDualSrcBlend) textFragmentShader.ptr else textFragmentCompatShader.ptr),
             },
             null,
             &fragmentShaderModule,
@@ -2509,12 +2550,11 @@ const TextPipeline = struct {
                     .pAttachments = &c.VkPipelineColorBlendAttachmentState{
                         .colorWriteMask = c.VK_COLOR_COMPONENT_R_BIT | c.VK_COLOR_COMPONENT_G_BIT | c.VK_COLOR_COMPONENT_B_BIT | c.VK_COLOR_COMPONENT_A_BIT,
                         .blendEnable = c.VK_TRUE,
-                        // Dual-source blending: use SRC1_COLOR from fragment shader's second output
-                        .srcColorBlendFactor = c.VK_BLEND_FACTOR_ONE,
-                        .dstColorBlendFactor = c.VK_BLEND_FACTOR_ONE_MINUS_SRC1_COLOR,
+                        .srcColorBlendFactor = if (supportsDualSrcBlend) c.VK_BLEND_FACTOR_ONE else c.VK_BLEND_FACTOR_SRC_ALPHA,
+                        .dstColorBlendFactor = if (supportsDualSrcBlend) c.VK_BLEND_FACTOR_ONE_MINUS_SRC1_COLOR else c.VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
                         .colorBlendOp = c.VK_BLEND_OP_ADD,
                         .srcAlphaBlendFactor = c.VK_BLEND_FACTOR_ONE,
-                        .dstAlphaBlendFactor = c.VK_BLEND_FACTOR_ONE_MINUS_SRC1_ALPHA,
+                        .dstAlphaBlendFactor = if (supportsDualSrcBlend) c.VK_BLEND_FACTOR_ONE_MINUS_SRC1_ALPHA else c.VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
                         .alphaBlendOp = c.VK_BLEND_OP_ADD,
                     },
                     .blendConstants = .{ 0.0, 0.0, 0.0, 0.0 },
@@ -2991,6 +3031,8 @@ pub const Renderer = struct {
             graphicsQueueFamilyIndex: u32,
             presentationQueueFamilyIndex: u32,
             score: usize,
+            supportsImageSampling: bool,
+            supportsDualSrcBlend: bool,
         } = null;
         blk: for (graphics.devices) |device| {
             for (requiredDeviceExtensions) |extension| {
@@ -3021,30 +3063,13 @@ pub const Renderer = struct {
             };
             c.vkGetPhysicalDeviceFeatures2(device.physicalDevice, &deviceFeatures2);
 
-            if (vulkan12Features.bufferDeviceAddress != c.VK_TRUE or
-                vulkan12Features.shaderInt8 != c.VK_TRUE or
-                vulkan12Features.descriptorIndexing != c.VK_TRUE or
-                vulkan12Features.shaderSampledImageArrayNonUniformIndexing != c.VK_TRUE or
-                vulkan12Features.descriptorBindingPartiallyBound != c.VK_TRUE or
-                vulkan12Features.descriptorBindingSampledImageUpdateAfterBind != c.VK_TRUE or
-                vulkan12Features.descriptorBindingUpdateUnusedWhilePending != c.VK_TRUE or
-                vulkan12Features.runtimeDescriptorArray != c.VK_TRUE)
-            {
-                std.log.info("Skipping device '{s}': missing required Vulkan 1.2 descriptor indexing features", .{
-                    std.mem.sliceTo(device.deviceProperties.deviceName[0..], 0),
-                });
-                continue :blk;
-            }
-
-            if (deviceFeatures2.features.shaderInt16 != c.VK_TRUE or
-                deviceFeatures2.features.shaderInt64 != c.VK_TRUE or
-                deviceFeatures2.features.dualSrcBlend != c.VK_TRUE)
-            {
-                std.log.info("Skipping device '{s}': missing required base features (shaderInt16, shaderInt64, or dualSrcBlend)", .{
-                    std.mem.sliceTo(device.deviceProperties.deviceName[0..], 0),
-                });
-                continue :blk;
-            }
+            const supportsImageSampling = vulkan12Features.descriptorIndexing == c.VK_TRUE and
+                vulkan12Features.shaderSampledImageArrayNonUniformIndexing == c.VK_TRUE and
+                vulkan12Features.descriptorBindingPartiallyBound == c.VK_TRUE and
+                vulkan12Features.descriptorBindingSampledImageUpdateAfterBind == c.VK_TRUE and
+                vulkan12Features.descriptorBindingUpdateUnusedWhilePending == c.VK_TRUE and
+                vulkan12Features.runtimeDescriptorArray == c.VK_TRUE;
+            const supportsDualSrcBlend = deviceFeatures2.features.dualSrcBlend == c.VK_TRUE;
 
             var score: u32 = device.deviceProperties.limits.maxImageDimension2D;
             if (device.deviceProperties.deviceType == c.VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU) {
@@ -3095,6 +3120,8 @@ pub const Renderer = struct {
                         .graphicsQueueFamilyIndex = graphicsQueueFamilyIndex.?,
                         .presentationQueueFamilyIndex = presentationQueueFamilyIndex.?,
                         .score = score,
+                        .supportsImageSampling = supportsImageSampling,
+                        .supportsDualSrcBlend = supportsDualSrcBlend,
                     };
                 }
             } else {
@@ -3103,6 +3130,8 @@ pub const Renderer = struct {
                     .graphicsQueueFamilyIndex = graphicsQueueFamilyIndex.?,
                     .presentationQueueFamilyIndex = presentationQueueFamilyIndex.?,
                     .score = score,
+                    .supportsImageSampling = supportsImageSampling,
+                    .supportsDualSrcBlend = supportsDualSrcBlend,
                 };
             }
         }
@@ -3112,6 +3141,15 @@ pub const Renderer = struct {
         const physicalDevice = preferred.?.device.physicalDevice;
         const graphicsQueueFamilyIndex = preferred.?.graphicsQueueFamilyIndex;
         const presentationQueueFamilyIndex = preferred.?.presentationQueueFamilyIndex;
+        const supportsImageSampling = preferred.?.supportsImageSampling;
+        const supportsDualSrcBlend = preferred.?.supportsDualSrcBlend;
+
+        if (!supportsImageSampling) {
+            std.log.warn("Selected GPU lacks Vulkan 1.2 descriptor indexing features. Falling back to compatibility mode without background images.", .{});
+        }
+        if (!supportsDualSrcBlend) {
+            std.log.warn("Selected GPU lacks dual-source blending. Falling back to compatibility text rendering.", .{});
+        }
 
         const queueCreateInfos: []const c.VkDeviceQueueCreateInfo = if (graphicsQueueFamilyIndex == presentationQueueFamilyIndex) &.{.{
             .sType = c.VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
@@ -3140,28 +3178,25 @@ pub const Renderer = struct {
         };
 
         var logicalDevice: c.VkDevice = undefined;
+        const enabledVulkan12Features = c.VkPhysicalDeviceVulkan12Features{
+            .sType = c.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
+            .descriptorIndexing = if (supportsImageSampling) c.VK_TRUE else c.VK_FALSE,
+            .shaderSampledImageArrayNonUniformIndexing = if (supportsImageSampling) c.VK_TRUE else c.VK_FALSE,
+            .descriptorBindingPartiallyBound = if (supportsImageSampling) c.VK_TRUE else c.VK_FALSE,
+            .descriptorBindingSampledImageUpdateAfterBind = if (supportsImageSampling) c.VK_TRUE else c.VK_FALSE,
+            .descriptorBindingUpdateUnusedWhilePending = if (supportsImageSampling) c.VK_TRUE else c.VK_FALSE,
+            .runtimeDescriptorArray = if (supportsImageSampling) c.VK_TRUE else c.VK_FALSE,
+        };
         try ensureNoError(c.vkCreateDevice(
             physicalDevice,
             &c.VkDeviceCreateInfo{
                 .sType = c.VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
-                .pNext = &c.VkPhysicalDeviceVulkan12Features{
-                    .sType = c.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
-                    .bufferDeviceAddress = c.VK_TRUE,
-                    .shaderInt8 = c.VK_TRUE,
-                    .descriptorIndexing = c.VK_TRUE,
-                    .shaderSampledImageArrayNonUniformIndexing = c.VK_TRUE,
-                    .descriptorBindingPartiallyBound = c.VK_TRUE,
-                    .descriptorBindingSampledImageUpdateAfterBind = c.VK_TRUE,
-                    .descriptorBindingUpdateUnusedWhilePending = c.VK_TRUE,
-                    .runtimeDescriptorArray = c.VK_TRUE,
-                },
+                .pNext = if (supportsImageSampling) &enabledVulkan12Features else null,
                 .flags = 0,
                 .queueCreateInfoCount = @intCast(queueCreateInfos.len),
                 .pQueueCreateInfos = queueCreateInfos.ptr,
                 .pEnabledFeatures = &c.VkPhysicalDeviceFeatures{
-                    .shaderInt16 = c.VK_TRUE,
-                    .shaderInt64 = c.VK_TRUE,
-                    .dualSrcBlend = c.VK_TRUE,
+                    .dualSrcBlend = if (supportsDualSrcBlend) c.VK_TRUE else c.VK_FALSE,
                 },
                 .ppEnabledExtensionNames = requiredDeviceExtensions.ptr,
                 .enabledExtensionCount = @intCast(requiredDeviceExtensions.len),
@@ -3277,6 +3312,7 @@ pub const Renderer = struct {
             logicalDevice,
             physicalDevice,
             renderPass,
+            supportsImageSampling,
         );
         errdefer elementsPipeline.deinit(logicalDevice);
 
@@ -3287,6 +3323,7 @@ pub const Renderer = struct {
             graphicsQueue,
             commandPool,
             renderPass,
+            supportsDualSrcBlend,
         );
         errdefer textPipeline.deinit(logicalDevice, graphics.allocator);
 

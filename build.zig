@@ -5,6 +5,8 @@ const Dependencies = struct {
     kb_text_shape: *std.Build.Dependency,
     zmath: *std.Build.Dependency,
     stb_image: *std.Build.Dependency,
+    allocator: std.mem.Allocator,
+    vulkanSdkPath: []const u8,
 
     target: std.Build.ResolvedTarget,
 
@@ -30,11 +32,15 @@ const Dependencies = struct {
             .optimize = optimize,
         });
 
+        const vulkanSdkPath = std.process.getEnvVarOwned(b.allocator, "VULKAN_SDK") catch b.fmt("{s}", .{"C:/VulkanSDK/1.4.335.0"});
+
         return @This(){
             .freetype = freetype,
             .kb_text_shape = kb_text_shape,
             .stb_image = stb_image,
             .zmath = zmath,
+            .allocator = b.allocator,
+            .vulkanSdkPath = vulkanSdkPath,
             .target = target,
         };
     }
@@ -49,8 +55,10 @@ const Dependencies = struct {
                 module.addLibraryPath(.{ .cwd_relative = "/usr/local/lib" });
             },
             .windows => {
-                module.addIncludePath(.{ .cwd_relative = "C:/VulkanSDK/1.4.335.0/Include" });
-                module.addLibraryPath(.{ .cwd_relative = "C:/VulkanSDK/1.4.335.0/Lib" });
+                const includePath = std.fs.path.join(self.allocator, &.{ self.vulkanSdkPath, "Include" }) catch @panic("Could not resolve Vulkan include path");
+                const libPath = std.fs.path.join(self.allocator, &.{ self.vulkanSdkPath, "Lib" }) catch @panic("Could not resolve Vulkan lib path");
+                module.addIncludePath(.{ .cwd_relative = includePath });
+                module.addLibraryPath(.{ .cwd_relative = libPath });
             },
             else => {},
         }
@@ -78,7 +86,11 @@ const Dependencies = struct {
             },
             else => {},
         }
-        module.linkSystemLibrary("vulkan", .{});
+        if (self.target.result.os.tag == .windows) {
+            module.linkSystemLibrary("vulkan-1", .{});
+        } else {
+            module.linkSystemLibrary("vulkan", .{});
+        }
     }
 };
 
@@ -165,8 +177,10 @@ pub fn build(b: *std.Build) void {
 
     addShaderImport(b, forbear, "shaders/element/vertex.vert", "element_vertex_shader");
     addShaderImport(b, forbear, "shaders/element/fragment.frag", "element_fragment_shader");
+    addShaderImport(b, forbear, "shaders/element/fragment_compat.frag", "element_fragment_compat_shader");
     addShaderImport(b, forbear, "shaders/text/vertex.vert", "text_vertex_shader");
     addShaderImport(b, forbear, "shaders/text/fragment.frag", "text_fragment_shader");
+    addShaderImport(b, forbear, "shaders/text/fragment_compat.frag", "text_fragment_compat_shader");
     addShaderImport(b, forbear, "shaders/shadow/vertex.vert", "shadow_vertex_shader");
     addShaderImport(b, forbear, "shaders/shadow/fragment.frag", "shadow_fragment_shader");
 
