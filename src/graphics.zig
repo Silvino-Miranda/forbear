@@ -3940,9 +3940,9 @@ pub const Renderer = struct {
                         };
                     }
                     const unitsPerEmF: f32 = @floatFromInt(layoutBox.style.font.unitsPerEm());
-                    const pixelAscent = (layoutBox.style.font.ascent() / unitsPerEmF) * layoutBox.style.fontSize * resolutionMultiplier[0];
+                    const pixelAscentUnderline = (layoutBox.style.font.ascent() / unitsPerEmF) * layoutBox.style.fontSize * resolutionMultiplier[0];
                     const underlineThickness = @max(1.0, layoutBox.style.fontSize / 14.0 * resolutionMultiplier[0]);
-                    const underlineY = layoutBox.position[1] + pixelAscent + 1.0;
+                    const underlineY = layoutBox.position[1] + pixelAscentUnderline + 1.0;
                     self.elementsPipeline.elementsShaderData[frameIndex][idx] = ElementRenderingData{
                         .modelViewProjectionMatrix = zmath.mul(
                             zmath.mul(
