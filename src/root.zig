@@ -40,6 +40,16 @@ const Event = union(enum) {
     mouseOut,
 };
 
+/// Spring physics state for per-element scrolling.
+pub const ElementScrollState = struct {
+    /// Target scroll offset (updated immediately on mouse wheel).
+    target: Vec2 = @splat(0.0),
+    /// Current animated scroll offset (spring-interpolated toward target).
+    current: Vec2 = @splat(0.0),
+    /// Current velocity for the spring integration.
+    velocity: Vec2 = @splat(0.0),
+};
+
 const ElementEventQueue = std.AutoHashMap(u64, std.ArrayList(Event));
 
 allocator: std.mem.Allocator,
@@ -76,6 +86,13 @@ previousPushedNode: ?*const Node,
 images: std.StringHashMap(Image),
 fonts: std.StringHashMap(Font),
 
+/// Per-element scroll state keyed by element key.
+/// Scroll offset is automatically applied to children of elements with overflow: .scroll.
+elementScrollStates: std.AutoHashMap(u64, ElementScrollState),
+/// Keys of elements with overflow: .scroll, rebuilt each frame during update().
+/// Used by the scroll event handler for hit-testing.
+scrollableElementKeys: std.AutoHashMap(u64, void),
+
 pub fn init(allocator: std.mem.Allocator, renderer: *Graphics.Renderer) !void {
     if (context != null) {
         return error.AlreadyInitialized;
@@ -108,6 +125,9 @@ pub fn init(allocator: std.mem.Allocator, renderer: *Graphics.Renderer) !void {
 
         .images = std.StringHashMap(Image).init(allocator),
         .fonts = std.StringHashMap(Font).init(allocator),
+
+        .elementScrollStates = std.AutoHashMap(u64, ElementScrollState).init(allocator),
+        .scrollableElementKeys = std.AutoHashMap(u64, void).init(allocator),
     };
 }
 
@@ -468,6 +488,25 @@ pub fn useSpringTransition(target: f32, config: SpringConfig) !f32 {
     }
 
     return value.*;
+}
+
+/// Config for the useScroll hook.
+pub const ScrollConfig = struct {
+    direction: enum { vertical, horizontal } = .vertical,
+};
+
+/// Returns the current animated scroll offset (in pixels) for the nearest
+/// scrollable ancestor of the current component.
+///
+/// Useful for UI logic that needs to react to scroll position (e.g. showing
+/// a "back to top" button, parallax effects, etc.). Scrolling itself is
+/// automatic for elements with `overflow: .scroll` — you do NOT need to call
+/// this hook to make scrolling work.
+pub fn useScroll(config: ScrollConfig) !f32 {
+    const self = getContext();
+    const key = self.componentResolutionState.?.key;
+    const state = self.elementScrollStates.get(key) orelse ElementScrollState{};
+    return if (config.direction == .vertical) state.current[1] else state.current[0];
 }
 
 pub fn useAnimation(duration: f32) !Animation {
@@ -1390,6 +1429,9 @@ pub fn update(arena: std.mem.Allocator, roots: []const LayoutBox, viewportSize: 
         events.clearRetainingCapacity();
     }
 
+    // Rebuild the set of scrollable element keys for this frame.
+    self.scrollableElementKeys.clearRetainingCapacity();
+
     var iterator = try layouting.LayoutTreeIterator.init(arena, roots);
 
     var missingHoveredKeys = try std.ArrayList(u64).initCapacity(arena, self.hoveredElementKeys.items.len);
@@ -1402,6 +1444,11 @@ pub fn update(arena: std.mem.Allocator, roots: []const LayoutBox, viewportSize: 
             // this +scrollPosition term feels hacky to do, it's only required
             // because layouting adds in the scroll position
             uiEdges = @max(uiEdges, layoutBox.position + self.scrollPosition + layoutBox.size);
+        }
+
+        // Track scrollable elements so the wheel handler can route events.
+        if (layoutBox.style.overflow == .scroll) {
+            try self.scrollableElementKeys.put(layoutBox.key, {});
         }
         const isMouseAfter = layoutBox.position[0] <= self.mousePosition[0] and layoutBox.position[1] <= self.mousePosition[1];
         const isMouseBefore = layoutBox.position[0] + layoutBox.size[0] >= self.mousePosition[0] and layoutBox.position[1] + layoutBox.size[1] >= self.mousePosition[1];
@@ -1439,6 +1486,38 @@ pub fn update(arena: std.mem.Allocator, roots: []const LayoutBox, viewportSize: 
     self.lastUpdateTime = timestamp;
 
     try component(arena, Scrolling, .{ .uiEdges = uiEdges });
+
+    // Advance per-element scroll states with spring physics.
+    stepElementScrollStates(self);
+}
+
+/// Advance all per-element scroll states one step using a spring-damper model.
+/// Called once per frame from update().
+fn stepElementScrollStates(self: *Context) void {
+    const dt: f32 = @floatCast(self.deltaTime orelse 0.016);
+    if (dt == 0.0) return;
+
+    // Spring config: feels natural for scroll (overdamped, no bounce).
+    const stiffness: f32 = 300.0;
+    const damping: f32 = 35.0;
+    const mass: f32 = 1.0;
+
+    var iter = self.elementScrollStates.valueIterator();
+    while (iter.next()) |state| {
+        const displacement = state.target - state.current;
+        const acceleration = (displacement * @as(Vec2, @splat(stiffness)) - state.velocity * @as(Vec2, @splat(damping))) / @as(Vec2, @splat(mass));
+        state.velocity += acceleration * @as(Vec2, @splat(dt));
+        state.current += state.velocity * @as(Vec2, @splat(dt));
+
+        // Snap to target when close enough.
+        const epsilon: f32 = 0.1;
+        if (@reduce(.And, @abs(displacement) < @as(Vec2, @splat(epsilon))) and
+            @reduce(.And, @abs(state.velocity) < @as(Vec2, @splat(epsilon))))
+        {
+            state.current = state.target;
+            state.velocity = @splat(0.0);
+        }
+    }
 }
 
 fn Scrolling(props: struct { uiEdges: Vec2 }) !void {
@@ -1512,9 +1591,30 @@ pub fn setWindowHandlers(window: *Window) void {
                 else
                     axis;
 
-                switch (shiftAccordingAxis) {
-                    .horizontal => ctx.effectiveScrollPosition[0] += offset,
-                    .vertical => ctx.effectiveScrollPosition[1] += offset,
+                // Find innermost hovered scrollable element (iterate backward = innermost first).
+                var scrollTargetKey: ?u64 = null;
+                var ki = ctx.hoveredElementKeys.items.len;
+                while (ki > 0) {
+                    ki -= 1;
+                    const k = ctx.hoveredElementKeys.items[ki];
+                    if (ctx.scrollableElementKeys.contains(k)) {
+                        scrollTargetKey = k;
+                        break;
+                    }
+                }
+
+                if (scrollTargetKey) |key| {
+                    const gop = ctx.elementScrollStates.getOrPut(key) catch return;
+                    if (!gop.found_existing) gop.value_ptr.* = .{};
+                    switch (shiftAccordingAxis) {
+                        .horizontal => gop.value_ptr.target[0] += offset,
+                        .vertical => gop.value_ptr.target[1] += offset,
+                    }
+                } else {
+                    switch (shiftAccordingAxis) {
+                        .horizontal => ctx.effectiveScrollPosition[0] += offset,
+                        .vertical => ctx.effectiveScrollPosition[1] += offset,
+                    }
                 }
             }
         }).handler,
@@ -1565,6 +1665,9 @@ pub fn deinit() void {
         image.deinit();
     }
     self.images.deinit();
+
+    self.elementScrollStates.deinit();
+    self.scrollableElementKeys.deinit();
 
     context = null;
 }

@@ -15,6 +15,24 @@ const Vec4 = @Vector(4, f32);
 const Vec3 = @Vector(3, f32);
 const Vec2 = @Vector(2, f32);
 
+/// Axis-aligned rectangle used for clip regions.
+pub const Rect = struct {
+    pos: Vec2,
+    size: Vec2,
+
+    /// Returns the intersection of two rects (zero-size if they don't overlap).
+    pub fn intersect(self: @This(), other: @This()) @This() {
+        const newPos = @max(self.pos, other.pos);
+        const selfEnd = self.pos + self.size;
+        const otherEnd = other.pos + other.size;
+        const newEnd = @min(selfEnd, otherEnd);
+        return .{
+            .pos = newPos,
+            .size = @max(newEnd - newPos, @as(Vec2, @splat(0.0))),
+        };
+    }
+};
+
 pub const LayoutGlyph = struct {
     index: c_uint,
     position: Vec2,
@@ -51,6 +69,11 @@ pub const LayoutBox = struct {
 
     style: Style,
 
+    /// Clip rect inherited from the nearest ancestor with overflow != .visible.
+    /// Set during makeAbsolute and propagated to all descendants.
+    /// null means no clipping (render at full viewport).
+    clipRect: ?Rect = null,
+
     pub fn getMinSize(self: @This(), direction: Direction) f32 {
         if (direction == .leftToRight) {
             return self.minSize[0];
@@ -78,16 +101,42 @@ fn makeAbsolute(layoutBox: *LayoutBox, base: Vec2) void {
         layoutBox.position += base;
     }
 
+    // Set the clip rect for elements that clip their children.
+    // This rect is the element's own bounds in absolute coordinates.
+    if (layoutBox.style.overflow == .scroll or layoutBox.style.overflow == .hidden) {
+        layoutBox.clipRect = Rect{ .pos = layoutBox.position, .size = layoutBox.size };
+    }
+
     if (layoutBox.children != null) {
+        // For scroll containers, offset children by the current scroll position
+        // so that content scrolls within the container.
+        const scrollOffset: Vec2 = if (layoutBox.style.overflow == .scroll) blk: {
+            const ctx = forbear.getContext();
+            if (ctx.elementScrollStates.get(layoutBox.key)) |state| {
+                break :blk state.current;
+            }
+            break :blk @splat(0.0);
+        } else @splat(0.0);
+
+        const childBase = layoutBox.position - scrollOffset;
+
         switch (layoutBox.children.?) {
             .layoutBoxes => |children| {
                 for (children) |*child| {
-                    makeAbsolute(child, layoutBox.position);
+                    makeAbsolute(child, childBase);
+                    // Propagate clip rect from this element to its children.
+                    if (layoutBox.clipRect) |parentClip| {
+                        if (child.clipRect) |childClip| {
+                            child.clipRect = parentClip.intersect(childClip);
+                        } else {
+                            child.clipRect = parentClip;
+                        }
+                    }
                 }
             },
             .glyphs => |glyphs| {
                 for (glyphs.slice) |*glyph| {
-                    glyph.position += layoutBox.position;
+                    glyph.position += childBase;
                 }
             },
         }
@@ -1644,4 +1693,32 @@ test "wrap - word wrapping with alignment end" {
             .{ 90.0, 20.0 }, // d
         },
     });
+}
+
+test "Scrolling - Rect.intersect overlapping rects returns correct intersection" {
+    const a = Rect{ .pos = .{ 0.0, 0.0 }, .size = .{ 100.0, 100.0 } };
+    const b = Rect{ .pos = .{ 50.0, 50.0 }, .size = .{ 100.0, 100.0 } };
+    const result = a.intersect(b);
+    try std.testing.expectApproxEqAbs(result.pos[0], 50.0, 0.001);
+    try std.testing.expectApproxEqAbs(result.pos[1], 50.0, 0.001);
+    try std.testing.expectApproxEqAbs(result.size[0], 50.0, 0.001);
+    try std.testing.expectApproxEqAbs(result.size[1], 50.0, 0.001);
+}
+
+test "Scrolling - Rect.intersect non-overlapping rects returns zero size" {
+    const a = Rect{ .pos = .{ 0.0, 0.0 }, .size = .{ 50.0, 50.0 } };
+    const b = Rect{ .pos = .{ 100.0, 100.0 }, .size = .{ 50.0, 50.0 } };
+    const result = a.intersect(b);
+    try std.testing.expectApproxEqAbs(result.size[0], 0.0, 0.001);
+    try std.testing.expectApproxEqAbs(result.size[1], 0.0, 0.001);
+}
+
+test "Scrolling - Rect.intersect contained rect returns inner rect" {
+    const outer = Rect{ .pos = .{ 10.0, 10.0 }, .size = .{ 200.0, 200.0 } };
+    const inner = Rect{ .pos = .{ 50.0, 50.0 }, .size = .{ 50.0, 50.0 } };
+    const result = outer.intersect(inner);
+    try std.testing.expectApproxEqAbs(result.pos[0], 50.0, 0.001);
+    try std.testing.expectApproxEqAbs(result.pos[1], 50.0, 0.001);
+    try std.testing.expectApproxEqAbs(result.size[0], 50.0, 0.001);
+    try std.testing.expectApproxEqAbs(result.size[1], 50.0, 0.001);
 }
