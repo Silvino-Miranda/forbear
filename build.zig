@@ -1,10 +1,30 @@
 const std = @import("std");
 
+fn detectLatestVulkanSDK(allocator: std.mem.Allocator) []const u8 {
+    // Try common Vulkan SDK paths in order
+    const commonPaths = [_][]const u8{
+        "C:\\VulkanSDK\\1.4.341.1",
+        "C:\\VulkanSDK\\1.4.335.0",
+        "C:\\VulkanSDK\\1.4.280.1",
+        "C:/VulkanSDK/1.4.335.0",
+    };
+
+    for (commonPaths) |path| {
+        if (std.fs.accessAbsolute(path, .{})) |_| {
+            return allocator.dupe(u8, path) catch "C:/VulkanSDK/1.4.335.0";
+        } else |_| {}
+    }
+
+    return "C:/VulkanSDK/1.4.335.0";
+}
+
 const Dependencies = struct {
     freetype: *std.Build.Dependency,
     kb_text_shape: *std.Build.Dependency,
     zmath: *std.Build.Dependency,
     stb_image: *std.Build.Dependency,
+    allocator: std.mem.Allocator,
+    vulkanSdkPath: []const u8,
 
     target: std.Build.ResolvedTarget,
 
@@ -30,11 +50,16 @@ const Dependencies = struct {
             .optimize = optimize,
         });
 
+        // Get Vulkan SDK path from env var or detect latest version
+        const vulkanSdkPath = std.process.getEnvVarOwned(b.allocator, "VULKAN_SDK") catch detectLatestVulkanSDK(b.allocator);
+
         return @This(){
             .freetype = freetype,
             .kb_text_shape = kb_text_shape,
             .stb_image = stb_image,
             .zmath = zmath,
+            .allocator = b.allocator,
+            .vulkanSdkPath = vulkanSdkPath,
             .target = target,
         };
     }
@@ -49,8 +74,10 @@ const Dependencies = struct {
                 module.addLibraryPath(.{ .cwd_relative = "/usr/local/lib" });
             },
             .windows => {
-                module.addIncludePath(.{ .cwd_relative = "C:/VulkanSDK/1.4.335.0/Include" });
-                module.addLibraryPath(.{ .cwd_relative = "C:/VulkanSDK/1.4.335.0/Lib" });
+                const includePath = std.fs.path.join(self.allocator, &.{ self.vulkanSdkPath, "Include" }) catch @panic("Could not resolve Vulkan include path");
+                const libPath = std.fs.path.join(self.allocator, &.{ self.vulkanSdkPath, "Lib" }) catch @panic("Could not resolve Vulkan lib path");
+                module.addIncludePath(.{ .cwd_relative = includePath });
+                module.addLibraryPath(.{ .cwd_relative = libPath });
             },
             else => {},
         }
@@ -78,7 +105,11 @@ const Dependencies = struct {
             },
             else => {},
         }
-        module.linkSystemLibrary("vulkan", .{});
+        if (self.target.result.os.tag == .windows) {
+            module.linkSystemLibrary("vulkan-1", .{});
+        } else {
+            module.linkSystemLibrary("vulkan", .{});
+        }
     }
 };
 
@@ -103,8 +134,11 @@ pub fn addShaderImport(b: *std.Build, module: *std.Build.Module, path: []const u
 }
 
 pub fn build(b: *std.Build) void {
-    const target = b.standardTargetOptions(.{});
+    var target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+
+    // Force generic CPU model for compatibility (baseline works on all x86-64 CPUs)
+    target.query.cpu_model = .baseline;
 
     const forbear = b.addModule("forbear", .{
         .root_source_file = b.path("src/root.zig"),
@@ -165,8 +199,10 @@ pub fn build(b: *std.Build) void {
 
     addShaderImport(b, forbear, "shaders/element/vertex.vert", "element_vertex_shader");
     addShaderImport(b, forbear, "shaders/element/fragment.frag", "element_fragment_shader");
+    addShaderImport(b, forbear, "shaders/element/fragment_compat.frag", "element_fragment_compat_shader");
     addShaderImport(b, forbear, "shaders/text/vertex.vert", "text_vertex_shader");
     addShaderImport(b, forbear, "shaders/text/fragment.frag", "text_fragment_shader");
+    addShaderImport(b, forbear, "shaders/text/fragment_compat.frag", "text_fragment_compat_shader");
     addShaderImport(b, forbear, "shaders/shadow/vertex.vert", "shadow_vertex_shader");
     addShaderImport(b, forbear, "shaders/shadow/fragment.frag", "shadow_fragment_shader");
 
@@ -233,5 +269,13 @@ pub fn build(b: *std.Build) void {
         });
         uhoh_build.setCwd(b.path("examples/uhoh.com"));
         check_step.dependOn(&uhoh_build.step);
+
+        // Build feature-showcase example
+        const showcase_build = b.addSystemCommand(&.{
+            "zig",
+            "build",
+        });
+        showcase_build.setCwd(b.path("examples/feature-showcase"));
+        check_step.dependOn(&showcase_build.step);
     }
 }
