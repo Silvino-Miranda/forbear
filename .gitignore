@@ -30,3 +30,5 @@ Thumbs.db
 .zig-cache/
 zig-out/bin/
 examples/feature-showcase/zig-out/
+examples/uhoh.com/zig-out/
+examples/scroll-showcase/zig-out/
