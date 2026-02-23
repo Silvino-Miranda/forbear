@@ -93,6 +93,15 @@ elementScrollStates: std.AutoHashMap(u64, ElementScrollState),
 /// Used by the scroll event handler for hit-testing.
 scrollableElementKeys: std.AutoHashMap(u64, void),
 
+/// Active slot capture buffer. When set, new nodes whose immediate parent
+/// matches slotCaptureParent are redirected here instead of the normal tree.
+slotCaptureTarget: ?*std.ArrayListUnmanaged(Node),
+/// The parent node active when slotBegin() was called. Only direct children
+/// of this parent are redirected to slotCaptureTarget.
+slotCaptureParent: ?*Node,
+/// LIFO stack of captured slot children, consumed by componentChildrenSlot().
+pendingSlotStack: std.ArrayList(std.ArrayListUnmanaged(Node)),
+
 pub fn init(allocator: std.mem.Allocator, renderer: *Graphics.Renderer) !void {
     if (context != null) {
         return error.AlreadyInitialized;
@@ -128,6 +137,10 @@ pub fn init(allocator: std.mem.Allocator, renderer: *Graphics.Renderer) !void {
 
         .elementScrollStates = std.AutoHashMap(u64, ElementScrollState).init(allocator),
         .scrollableElementKeys = std.AutoHashMap(u64, void).init(allocator),
+
+        .slotCaptureTarget = null,
+        .slotCaptureParent = null,
+        .pendingSlotStack = .empty,
     };
 }
 
@@ -1273,11 +1286,25 @@ fn putNode(arena: std.mem.Allocator) !struct { ptr: *Node, index: usize } {
         // can we make sure that the compiler will ensure that the parent here
         // always allows for children?
         std.debug.assert(parent.content == .element);
+
+        // If slot capture is active and this parent is the capture boundary,
+        // redirect the new node to the capture buffer instead.
+        if (self.slotCaptureTarget != null and parent == self.slotCaptureParent) {
+            const capture = self.slotCaptureTarget.?;
+            return .{ .ptr = try capture.addOne(arena), .index = capture.items.len - 1 };
+        }
+
         return .{
             .ptr = try parent.content.element.children.addOne(arena),
             .index = parent.content.element.children.items.len - 1,
         };
     } else {
+        // No parent on the stack. If slot capture is active (top-level slot),
+        // redirect to the capture buffer.
+        if (self.slotCaptureTarget != null and self.slotCaptureParent == null) {
+            const capture = self.slotCaptureTarget.?;
+            return .{ .ptr = try capture.addOne(arena), .index = capture.items.len - 1 };
+        }
         return .{ .ptr = try self.rootNodes.addOne(self.allocator), .index = 0 };
     }
 }
@@ -1397,6 +1424,41 @@ pub inline fn component(arena: std.mem.Allocator, comptime function: anytype, pr
     }
     self.componentResolutionState = previousComponentResolutionState;
     return returnValue;
+}
+
+/// Begin capturing children for the next component's slot.
+/// Place child nodes between slotBegin() and slotEnd(), then call component().
+/// The component may call componentChildrenSlot() to insert them into its layout.
+pub fn slotBegin(arena: std.mem.Allocator) !void {
+    _ = arena;
+    const self = getContext();
+    const buf = try self.pendingSlotStack.addOne(self.allocator);
+    buf.* = .empty;
+    self.slotCaptureTarget = buf;
+    self.slotCaptureParent = self.frameNodeParentStack.getLastOrNull();
+}
+
+/// End capturing children for a slot.
+/// The captured children remain pending until consumed by componentChildrenSlot().
+pub fn slotEnd() void {
+    const self = getContext();
+    self.slotCaptureTarget = null;
+    self.slotCaptureParent = null;
+}
+
+/// Insert pending slot children at this position within the component's layout.
+/// Call inside a component function at the desired insertion point.
+/// If no children were provided via slotBegin()/slotEnd(), does nothing.
+pub fn componentChildrenSlot(arena: std.mem.Allocator) !void {
+    const self = getContext();
+    if (self.pendingSlotStack.items.len == 0) return;
+    const children = self.pendingSlotStack.pop().?;
+    if (self.frameNodeParentStack.getLastOrNull()) |parent| {
+        std.debug.assert(parent.content == .element);
+        for (children.items) |child| {
+            try parent.content.element.children.append(arena, child);
+        }
+    }
 }
 
 fn pushEvent(key: u64, event: Event) !void {
@@ -1549,6 +1611,9 @@ pub fn resetNodeTree() void {
     self.rootNodes.clearRetainingCapacity();
     self.frameNodeParentStack.clearRetainingCapacity();
     self.frameNodePath.clearRetainingCapacity();
+    self.slotCaptureTarget = null;
+    self.slotCaptureParent = null;
+    self.pendingSlotStack.clearRetainingCapacity();
 }
 
 fn timestampSeconds() f64 {
@@ -1669,11 +1734,129 @@ pub fn deinit() void {
     self.elementScrollStates.deinit();
     self.scrollableElementKeys.deinit();
 
+    self.pendingSlotStack.deinit(self.allocator);
+
     context = null;
 }
 
 pub fn getContext() *@This() {
     return &context.?;
+}
+
+// ---------------------------------------------------------------------------
+// Slotting test helpers — module-level so Outer can reference Inner.
+// ---------------------------------------------------------------------------
+
+const slotting_test_components = struct {
+    fn Container() !void {
+        const a = try useArena();
+        (try element(a, .{}))({
+            try text(a, "before");
+            try componentChildrenSlot(a);
+            try text(a, "after");
+        });
+    }
+    fn ContentOnly() !void {
+        const a = try useArena();
+        (try element(a, .{}))({
+            try text(a, "content");
+            try componentChildrenSlot(a);
+        });
+    }
+    fn Inner() !void {
+        const a = try useArena();
+        (try element(a, .{}))({
+            try text(a, "inner-before");
+            try componentChildrenSlot(a);
+            try text(a, "inner-after");
+        });
+    }
+    fn Outer() !void {
+        const a = try useArena();
+        (try element(a, .{}))({
+            try text(a, "outer-before");
+            try slotBegin(a);
+            try text(a, "inner-child");
+            slotEnd();
+            try component(a, slotting_test_components.Inner, null);
+            try componentChildrenSlot(a);
+            try text(a, "outer-after");
+        });
+    }
+};
+
+test "Slotting - children rendered at correct position" {
+    try init(std.testing.allocator, undefined);
+    defer deinit();
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const arenaAllocator = arena.allocator();
+
+    try slotBegin(arenaAllocator);
+    try text(arenaAllocator, "slot child");
+    slotEnd();
+    try component(arenaAllocator, slotting_test_components.Container, null);
+
+    const ctx = getContext();
+    try std.testing.expectEqual(1, ctx.rootNodes.items.len);
+    const container_el = &ctx.rootNodes.items[0].content.element;
+    // Expects: "before", "slot child", "after"
+    try std.testing.expectEqual(3, container_el.children.items.len);
+    try std.testing.expectEqualStrings("before", container_el.children.items[0].content.text);
+    try std.testing.expectEqualStrings("slot child", container_el.children.items[1].content.text);
+    try std.testing.expectEqualStrings("after", container_el.children.items[2].content.text);
+}
+
+test "Slotting - empty slot renders nothing" {
+    try init(std.testing.allocator, undefined);
+    defer deinit();
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const arenaAllocator = arena.allocator();
+
+    // No slotBegin/slotEnd — componentChildrenSlot inside ContentOnly is a no-op.
+    try component(arenaAllocator, slotting_test_components.ContentOnly, null);
+
+    const ctx = getContext();
+    try std.testing.expectEqual(1, ctx.rootNodes.items.len);
+    const container_el = &ctx.rootNodes.items[0].content.element;
+    // Expects only "content" — slot injected nothing.
+    try std.testing.expectEqual(1, container_el.children.items.len);
+    try std.testing.expectEqualStrings("content", container_el.children.items[0].content.text);
+}
+
+test "Slotting - nested slots resolve independently" {
+    try init(std.testing.allocator, undefined);
+    defer deinit();
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const arenaAllocator = arena.allocator();
+
+    // Outer receives "outer-child"; Outer internally passes "inner-child" to Inner.
+    try slotBegin(arenaAllocator);
+    try text(arenaAllocator, "outer-child");
+    slotEnd();
+    try component(arenaAllocator, slotting_test_components.Outer, null);
+
+    const ctx = getContext();
+    try std.testing.expectEqual(1, ctx.rootNodes.items.len);
+    const outer_el = &ctx.rootNodes.items[0].content.element;
+
+    // Outer has: "outer-before", Inner-element, "outer-child", "outer-after"
+    try std.testing.expectEqual(4, outer_el.children.items.len);
+    try std.testing.expectEqualStrings("outer-before", outer_el.children.items[0].content.text);
+    try std.testing.expectEqualStrings("outer-child", outer_el.children.items[2].content.text);
+    try std.testing.expectEqualStrings("outer-after", outer_el.children.items[3].content.text);
+
+    // Inner element has: "inner-before", "inner-child", "inner-after"
+    const inner_el = &outer_el.children.items[1].content.element;
+    try std.testing.expectEqual(3, inner_el.children.items.len);
+    try std.testing.expectEqualStrings("inner-before", inner_el.children.items[0].content.text);
+    try std.testing.expectEqualStrings("inner-child", inner_el.children.items[1].content.text);
+    try std.testing.expectEqualStrings("inner-after", inner_el.children.items[2].content.text);
 }
 
 test {

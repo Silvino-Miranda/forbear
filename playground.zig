@@ -1,8 +1,33 @@
 //! forbear Playground — Feature Showcase
-//! Demonstrates Story 1.1 (Percentage Sizing), Story 1.2 (Scrolling), and Story 1.5 (Underlined Text)
+//! Demonstrates Story 1.1 (Percentage Sizing), Story 1.2 (Scrolling), Story 1.3 (Slotting), and Story 1.5 (Underlined Text)
 
 const std = @import("std");
 const forbear = @import("forbear");
+
+/// Card component — receives arbitrary content via componentChildrenSlot().
+fn Card(props: struct { title: []const u8 }) !void {
+    const arena = try forbear.useArena();
+    (try forbear.element(arena, .{
+        .width = .grow,
+        .direction = .topToBottom,
+        .background = .{ .color = .{ 0.10, 0.11, 0.15, 1.0 } },
+        .padding = forbear.Padding.all(16),
+        .borderRadius = 8,
+        .margin = forbear.Margin.block(0).withBottom(8),
+    }))({
+        // Card title
+        (try forbear.element(arena, .{
+            .fontSize = 14,
+            .fontWeight = 700,
+            .color = .{ 1.0, 0.42, 0.20, 1.0 },
+            .margin = forbear.Margin.block(0).withBottom(10),
+        }))({
+            try forbear.text(arena, props.title);
+        });
+        // Slot insertion point — caller's children are rendered here
+        try forbear.componentChildrenSlot(arena);
+    });
+}
 
 fn App() !void {
     const arena = try forbear.useArena();
@@ -280,6 +305,36 @@ fn App() !void {
                     try forbear.text(arena, "Multiple font sizes supported");
                 });
             });
+
+            // STORY 1.3: Component Children Slotting
+            // --- Card with a "button" and text passed as slot children ---
+            try forbear.slotBegin(arena);
+            // Simulated button element
+            (try forbear.element(arena, .{
+                .direction = .leftToRight,
+                .background = .{ .color = .{ 0.56, 0.35, 0.95, 1.0 } },
+                .padding = forbear.Padding.block(8).withInLine(16),
+                .borderRadius = 6,
+                .margin = forbear.Margin.block(0).withBottom(8),
+                .alignment = .center,
+            }))({
+                (try forbear.element(arena, .{
+                    .fontSize = 12,
+                    .fontWeight = 600,
+                    .color = .{ 0.95, 0.95, 0.97, 1.0 },
+                }))({
+                    try forbear.text(arena, "Slot Button");
+                });
+            });
+            // Descriptive text passed as slot content
+            (try forbear.element(arena, .{
+                .fontSize = 12,
+                .color = .{ 0.55, 0.58, 0.65, 1.0 },
+            }))({
+                try forbear.text(arena, "This content was passed into Card via componentChildrenSlot().");
+            });
+            forbear.slotEnd();
+            try forbear.component(arena, Card, .{ .title = "STORY 1.3: Component Children Slotting" });
         });
     });
 }

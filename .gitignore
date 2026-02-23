@@ -25,6 +25,7 @@ Thumbs.db
 
 # AIOS Local (AIOS)
 AGENTS.md
+.ai/
 .env.example
 .aios-core/
 .claude/
