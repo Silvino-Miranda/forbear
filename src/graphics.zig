@@ -3565,6 +3565,15 @@ pub const Renderer = struct {
         if (!insideView) {
             return;
         }
+        // Skip elements entirely outside their clip region (e.g., children scrolled off-screen).
+        if (layoutBox.clipRect) |clip| {
+            const insideClip =
+                layoutBox.position[0] + layoutBox.size[0] > clip.pos[0] and
+                layoutBox.position[1] + layoutBox.size[1] > clip.pos[1] and
+                clip.pos[0] + clip.size[0] > layoutBox.position[0] and
+                clip.pos[1] + clip.size[1] > layoutBox.position[1];
+            if (!insideClip) return;
+        }
         try list.append(allocator, layoutBox);
         if (layoutBox.children != null and layoutBox.children.? == .layoutBoxes) {
             for (layoutBox.children.?.layoutBoxes) |*child| {
@@ -3704,6 +3713,14 @@ pub const Renderer = struct {
         for (underlineElementIntervals) |*interval| interval.* = null;
         for (textIntervals) |*interval| interval.* = null;
 
+        // Per-Z-layer scissor rects. If all elements in a layer share the same clipRect,
+        // we apply it as the Vulkan scissor to clip children of overflow:scroll containers.
+        // layerClipMixed[i]=true means elements disagree → fall back to full viewport.
+        var layerClipRects = try arena.alloc(?layouting.Rect, @intCast(maxZ));
+        var layerClipMixed = try arena.alloc(bool, @intCast(maxZ));
+        for (layerClipRects) |*r| r.* = null;
+        for (layerClipMixed) |*m| m.* = false;
+
         const atlasWidthInv: f32 = 1.0 / @as(f32, @floatFromInt(self.textPipeline.fontTextureAtlas.capacityExtent.width));
         const atlasHeightInv: f32 = 1.0 / @as(f32, @floatFromInt(self.textPipeline.fontTextureAtlas.capacityExtent.height));
         const resolutionMultiplier = Vec2{
@@ -3724,6 +3741,23 @@ pub const Renderer = struct {
         var underlineElementIndex: usize = orderedLayoutBoxes.len;
 
         for (orderedLayoutBoxes) |layoutBox| {
+            // Track per-Z-layer clip rects for Vulkan scissor computation.
+            const lzi: usize = @intCast(layoutBox.z - 1);
+            if (!layerClipMixed[lzi]) {
+                if (layoutBox.clipRect) |cr| {
+                    if (layerClipRects[lzi]) |existing| {
+                        if (@reduce(.Or, existing.pos != cr.pos) or @reduce(.Or, existing.size != cr.size)) {
+                            layerClipMixed[lzi] = true;
+                        }
+                    } else {
+                        layerClipRects[lzi] = cr;
+                    }
+                } else if (layerClipRects[lzi] != null) {
+                    // This element has no clip but others in the layer do → mixed.
+                    layerClipMixed[lzi] = true;
+                }
+            }
+
             const elementIndex = switch (layoutBox.style.blendMode) {
                 .normal => blk: {
                     const idx = blendAddElementIndex;
@@ -4012,12 +4046,41 @@ pub const Renderer = struct {
             .maxDepth = 1.0,
         }});
 
+        // Initial full-viewport scissor; overridden per-layer below when a clip region applies.
         c.vkCmdSetScissor(self.commandBuffers[self.framesRenderedInSwapchain % maxFramesInFlight], 0, 1, &[_]c.VkRect2D{c.VkRect2D{
             .offset = c.VkOffset2D{ .x = 0, .y = 0 },
             .extent = self.swapchain.extent,
         }});
 
         for (0..blendAddElementIntervals.len) |i| {
+            // Apply per-Z-layer scissor for overflow:scroll/hidden clip regions.
+            if (layerClipRects[i] != null and !layerClipMixed[i]) {
+                const cr = layerClipRects[i].?;
+                const rawX: f32 = @floor(cr.pos[0]);
+                const rawY: f32 = @floor(cr.pos[1]);
+                const clampedX: f32 = @max(0.0, rawX);
+                const clampedY: f32 = @max(0.0, rawY);
+                const adjustedW: f32 = @max(0.0, @ceil(cr.size[0]) - (clampedX - rawX));
+                const adjustedH: f32 = @max(0.0, @ceil(cr.size[1]) - (clampedY - rawY));
+                const extentW: f32 = @floatFromInt(self.swapchain.extent.width);
+                const extentH: f32 = @floatFromInt(self.swapchain.extent.height);
+                c.vkCmdSetScissor(self.commandBuffers[frameIndex], 0, 1, &[_]c.VkRect2D{c.VkRect2D{
+                    .offset = c.VkOffset2D{
+                        .x = @intFromFloat(clampedX),
+                        .y = @intFromFloat(clampedY),
+                    },
+                    .extent = c.VkExtent2D{
+                        .width = @intFromFloat(@min(adjustedW, extentW - clampedX)),
+                        .height = @intFromFloat(@min(adjustedH, extentH - clampedY)),
+                    },
+                }});
+            } else {
+                c.vkCmdSetScissor(self.commandBuffers[frameIndex], 0, 1, &[_]c.VkRect2D{c.VkRect2D{
+                    .offset = c.VkOffset2D{ .x = 0, .y = 0 },
+                    .extent = self.swapchain.extent,
+                }});
+            }
+
             if (shadowIntervals[i]) |shadowInterval| {
                 self.shadowsPipeline.draw(
                     shadowInterval,

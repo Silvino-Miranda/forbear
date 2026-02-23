@@ -110,6 +110,15 @@ pub const TextDecoration = enum {
     underline,
 };
 
+pub const Overflow = enum {
+    /// Children render outside the element's bounds (default).
+    visible,
+    /// Children are clipped to the element's bounds; mouse wheel scrolls content.
+    scroll,
+    /// Children are clipped to the element's bounds; no scrolling.
+    hidden,
+};
+
 pub const Padding = struct {
     x: Vec2,
     y: Vec2,
@@ -347,6 +356,7 @@ pub const Style = struct {
 
     direction: Direction,
     alignment: Alignment,
+    overflow: Overflow,
 
     pub fn getPreferredSize(self: @This(), direction: Direction) Sizing {
         if (direction == .leftToRight) {
@@ -427,6 +437,7 @@ pub const IncompleteStyle = struct {
 
     alignment: ?Alignment = null,
     direction: ?Direction = null,
+    overflow: ?Overflow = null,
 
     pub fn completeWith(self: @This(), base: BaseStyle) Style {
         return Style{
@@ -466,6 +477,7 @@ pub const IncompleteStyle = struct {
 
             .direction = self.direction orelse .leftToRight,
             .alignment = self.alignment orelse Alignment.topLeft,
+            .overflow = self.overflow orelse .visible,
         };
     }
 };
@@ -498,4 +510,49 @@ test "Text decoration - IncompleteStyle textDecoration defaults to null" {
 test "Text decoration - IncompleteStyle with underline stores value correctly" {
     const style = IncompleteStyle{ .textDecoration = .underline };
     try std.testing.expect(style.textDecoration.? == .underline);
+}
+
+test "Scrolling - IncompleteStyle overflow defaults to null" {
+    const style = IncompleteStyle{};
+    try std.testing.expect(style.overflow == null);
+}
+
+test "Scrolling - IncompleteStyle overflow scroll stored correctly" {
+    const style = IncompleteStyle{ .overflow = .scroll };
+    try std.testing.expect(style.overflow.? == .scroll);
+}
+
+test "Scrolling - IncompleteStyle overflow hidden stored correctly" {
+    const style = IncompleteStyle{ .overflow = .hidden };
+    try std.testing.expect(style.overflow.? == .hidden);
+}
+
+test "Scrolling - completeWith resolves overflow visible by default" {
+    const style = IncompleteStyle{};
+    const baseStyle = BaseStyle{
+        .font = undefined,
+        .color = .{ 1.0, 1.0, 1.0, 1.0 },
+        .fontSize = 14.0,
+        .fontWeight = 400,
+        .lineHeight = 1.5,
+        .textWrapping = .word,
+        .blendMode = .normal,
+    };
+    const complete = style.completeWith(baseStyle);
+    try std.testing.expect(complete.overflow == .visible);
+}
+
+test "Scrolling - completeWith preserves explicit overflow scroll" {
+    const style = IncompleteStyle{ .overflow = .scroll };
+    const baseStyle = BaseStyle{
+        .font = undefined,
+        .color = .{ 1.0, 1.0, 1.0, 1.0 },
+        .fontSize = 14.0,
+        .fontWeight = 400,
+        .lineHeight = 1.5,
+        .textWrapping = .word,
+        .blendMode = .normal,
+    };
+    const complete = style.completeWith(baseStyle);
+    try std.testing.expect(complete.overflow == .scroll);
 }

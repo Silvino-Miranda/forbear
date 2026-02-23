@@ -1,0 +1,24 @@
+schema: 1
+story: '1.2'
+gate: PASS
+status_reason: >
+  All 6 acceptance criteria met. 8 dedicated scrolling tests pass (Rect.intersect x3,
+  Overflow style x5); 68/68 total tests pass. Bonus: standalone scroll-showcase example
+  demonstrates overflow:.scroll, overflow:.hidden, useScroll() live, spring physics
+  and per-element routing.
+reviewer: Quinn
+updated: '2026-02-22T00:00:00Z'
+top_issues:
+  - id: 'DOC-001'
+    severity: low
+    finding: >
+      useScroll() docstring says "nearest scrollable ancestor" but implementation
+      looks up by component key — minor mismatch between docs and behaviour
+    suggested_action: 'Clarify docstring: useScroll() reads scroll state of this component root element'
+  - id: 'REL-001'
+    severity: low
+    finding: >
+      hoveredElementKeys uses swapRemove (disrupts order), so innermost-element
+      scroll routing is best-effort for nested scroll containers
+    suggested_action: 'Document limitation; acceptable for MVP as nested scroll containers are out of scope'
+waiver: { active: false }

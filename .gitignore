@@ -24,9 +24,19 @@ Thumbs.db
 *.swp
 
 # AIOS Local (AIOS)
-.aios-core/local/
+AGENTS.md
+.env.example
+.aios-core/
+.claude/
+.codex/
+.agent/
+.github/agents/
+.github/copilot-instructions.md
+.antigravity
 .claude/settings.local.json
 .aios/install-log.txt
 .zig-cache/
 zig-out/bin/
 examples/feature-showcase/zig-out/
+examples/uhoh.com/zig-out/
+examples/scroll-showcase/zig-out/

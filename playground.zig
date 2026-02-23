@@ -1,5 +1,5 @@
 //! forbear Playground — Feature Showcase
-//! Demonstrates Story 1.1 (Percentage Sizing) and Story 1.5 (Underlined Text)
+//! Demonstrates Story 1.1 (Percentage Sizing), Story 1.2 (Scrolling), and Story 1.5 (Underlined Text)
 
 const std = @import("std");
 const forbear = @import("forbear");
@@ -179,6 +179,68 @@ fn App() !void {
                             try forbear.text(arena, "25%");
                         });
                     });
+                });
+            });
+
+            // STORY 1.2: Scrollable List
+            (try forbear.element(arena, .{
+                .width = .grow,
+                .direction = .topToBottom,
+                .background = .{ .color = .{ 0.13, 0.15, 0.19, 1.0 } },
+                .padding = forbear.Padding.all(16),
+                .borderRadius = 8,
+                .margin = forbear.Margin.block(0).withBottom(20),
+            }))({
+                (try forbear.element(arena, .{
+                    .fontSize = 14,
+                    .fontWeight = 700,
+                    .color = .{ 1.0, 0.42, 0.20, 1.0 },
+                    .textDecoration = .underline,
+                    .margin = forbear.Margin.block(0).withBottom(8),
+                }))({
+                    try forbear.text(arena, "STORY 1.2: Scrollable List");
+                });
+
+                (try forbear.element(arena, .{
+                    .fontSize = 11,
+                    .color = .{ 0.55, 0.58, 0.65, 1.0 },
+                    .margin = forbear.Margin.block(0).withBottom(12),
+                }))({
+                    try forbear.text(arena, "Mouse-wheel to scroll inside the list:");
+                });
+
+                // Scrollable container: 200px tall with 20 items (~1000px of content)
+                (try forbear.element(arena, .{
+                    .width = .grow,
+                    .height = .{ .fixed = 200 },
+                    .direction = .topToBottom,
+                    .overflow = .scroll,
+                    .background = .{ .color = .{ 0.08, 0.09, 0.12, 1.0 } },
+                    .borderRadius = 6,
+                    .borderWidth = forbear.BorderWidth.all(1),
+                    .borderColor = .{ 0.20, 0.22, 0.28, 1.0 },
+                }))({
+                    var itemIndex: usize = 1;
+                    while (itemIndex <= 20) : (itemIndex += 1) {
+                        const itemText = try std.fmt.allocPrint(arena, "Item {d:0>2} — scroll to see more items below", .{itemIndex});
+                        const isEven = itemIndex % 2 == 0;
+                        (try forbear.element(arena, .{
+                            .width = .grow,
+                            .direction = .leftToRight,
+                            .padding = forbear.Padding.block(10).withInLine(14),
+                            .background = .{ .color = if (isEven)
+                                @as(@Vector(4, f32), .{ 0.10, 0.11, 0.14, 1.0 })
+                            else
+                                @as(@Vector(4, f32), .{ 0.08, 0.09, 0.12, 1.0 }) },
+                        }))({
+                            (try forbear.element(arena, .{
+                                .fontSize = 12,
+                                .color = .{ 0.72, 0.75, 0.82, 1.0 },
+                            }))({
+                                try forbear.text(arena, itemText);
+                            });
+                        });
+                    }
                 });
             });
 
