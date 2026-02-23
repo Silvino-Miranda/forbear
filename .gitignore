@@ -29,7 +29,7 @@ AGENTS.md
 .aios-core/
 .claude/
 .codex/
-# .agent/
+.agent/
 .github/agents/
 .github/copilot-instructions.md
 .antigravity
